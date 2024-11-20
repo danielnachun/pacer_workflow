@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+
+# Set bash options for verbose output and to fail immediately on errors or if variables are undefined.
+set -o xtrace -o nounset -o errexit
+
+check_for_directory() {
+    argument_name="${1}"
+    directory_path="${2}"
+    if [[ ${directory_path} != "none" ]] && [[ ! -d ${directory_path} ]]; then
+        echo "Error: directory ${directory_path} passed with ${argument_name} does not exist."
+        exit 1
+    fi
+}
+
+options_array=(
+  input_directory
+  vcf_list_directory
+  output_directory
+  chunk_size
+)
+
+longoptions=$(echo "${options_array[@]}" | sed -e 's/ /:,/g' | sed -e 's/$/:/')
+
+# Parse command line arguments with getopt
+arguments=$(getopt --options a --longoptions "${longoptions}" --name 'submit_bcftools_merge' -- "$@")
+eval set -- "${arguments}"
+
+while true; do
+    case "${1}" in
+        --input_directory )
+            input_directory="${2}"; shift 2 ;;
+        --vcf_list_directory )
+            vcf_list_directory="${2}"; shift 2 ;;
+        --output_directory )
+            output_directory="${2}"; shift 2 ;;
+        --chunk_size )
+            chunk_size="${2}"; shift 2 ;;
+        -- )
+            shift; break;;
+        * )
+            echo "Invalid argument ${1} ${2}" >&2
+            exit 1
+    esac
+done
+
+input_directory="/oak/stanford/groups/sjaiswal/dnachun/ukbb/chip_carriers_next_batch_filtered"
+vcf_list_directory="/oak/stanford/groups/sjaiswal/dnachun/ukbb/chip_carriers_next_batch_vcf_lists"
+output_directory="/oak/stanford/groups/sjaiswal/dnachun/ukbb/chip_carriers_next_batch_aggregated_100"
+chunk_size="100"
+
+# Create lists of 100 VCFs
+mkdir -p ${vcf_list_directory}
+find -L "${input_directory}" -type f -name "*.vcf.gz" `#list all files in ${input_directory}` | \
+    sort -u `#sort and remove duplicate names` | \
+    split --lines ${chunk_size} -d - ${vcf_list_directory}/vcf_list_
+vcf_array_length=$(ls ${vcf_list_directory} | wc -l) #get the number of VCFs
+
+vcf_lists=$(dirname ${input_directory})/vcf_lists
+find -L "${vcf_list_directory}" -maxdepth 1 -mindepth 1 -type f `#list all files in ${input_directory}` | \
+    sort -u > ${vcf_lists}
+vcf_array_length=$(wc -l < ${vcf_lists}) #get the number of VCFs
+
+mkdir -p "${output_directory}/logs"
+code_directory=$(realpath $(dirname ${BASH_SOURCE[0]}))
+sbatch --output "${output_directory}/logs/%A_%a.log" \
+    --error "${output_directory}/logs/%A_%a.log" \
+    --array "1-${vcf_array_length}" \
+    --time 2:00:00 \
+    --account sjaiswal \
+    --partition batch \
+    --cpus-per-task 1 \
+    --mem 32G \
+    --constraint="nvme" \
+    --job-name bcftools_merge \
+    "${code_directory}/bcftools_merge.sh" \
+        --array_file "${vcf_lists}" \
+        --output_directory ${output_directory} 
